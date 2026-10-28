@@ -1,0 +1,190 @@
+@import "tailwindcss";
+
+@theme {
+  /* Tres roles tipográficos: Display geométrico para jerarquía, Atkinson para
+     lectura densa en consola/proyector, y Monoespaciada para telemetría y cifras. */
+  --font-display: "Space Grotesk", "Atkinson Hyperlegible Next Variable", system-ui, sans-serif;
+  --font-sans: "Atkinson Hyperlegible Next Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Paleta Cartográfica Modo Obscuro (Deep Technical Slate / Obsidian Console) */
+  --color-tinta: #f8fafc;
+  --color-tinta-suave: #94a3b8;
+  --color-tinta-tenue: #64748b;
+  --color-linea: #1e293b;
+  --color-linea-fuerte: #334155;
+  --color-fondo: #0a0e17;
+  --color-superficie: #111827;
+  --color-acento: #0284c7;
+  --color-acento-vivo: #38bdf8;
+  --color-acento-claro: #0c2338;
+  --color-error: #f87171;
+  --color-error-claro: #450a0a;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-fondo text-tinta font-sans antialiased selection:bg-acento-claro selection:text-tinta;
+    font-size: 16px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-acento);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes avance {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* Scrollbar técnica discreta para el catálogo de capas */
+.scroll-fino {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-linea-fuerte) transparent;
+}
+.scroll-fino::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll-fino::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-fino::-webkit-scrollbar-thumb {
+  background-color: var(--color-linea-fuerte);
+  border-radius: 9999px;
+}
+
+/* ---------------------------------------------------------------- Leaflet */
+
+.mapa {
+  background: #14171d;
+  font-family: var(--font-sans);
+}
+
+/* El resalte de la selección tiene su propio canvas encima de todo; sin esto
+   se quedaría con los clics destinados a las capas de abajo. */
+.leaflet-seleccion-pane { pointer-events: none; }
+
+.leaflet-bar {
+  border: 1px solid rgb(255 255 255 / 0.12) !important;
+  border-radius: 12px !important;
+  background: rgb(17 24 39 / 0.88) !important;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.5), 0 4px 10px -4px rgb(0 0 0 / 0.3) !important;
+  overflow: hidden;
+}
+.leaflet-bar a {
+  width: 44px !important;
+  height: 44px !important;
+  line-height: 42px !important;
+  color: var(--color-tinta) !important;
+  background: transparent !important;
+  font-family: var(--font-display);
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  border-bottom-color: var(--color-linea) !important;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+@media (min-width: 768px) {
+  .leaflet-bar a {
+    width: 38px !important;
+    height: 38px !important;
+    line-height: 36px !important;
+  }
+}
+.leaflet-bar a:hover {
+  background: var(--color-linea-fuerte) !important;
+  color: var(--color-acento-vivo) !important;
+}
+.leaflet-bar a:active {
+  background: var(--color-acento) !important;
+  color: #ffffff !important;
+}
+
+.leaflet-bottom.leaflet-left {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-left: 12px !important;
+  margin-bottom: 10px !important;
+  pointer-events: none;
+}
+.leaflet-bottom.leaflet-left .leaflet-control {
+  float: none !important;
+  clear: none !important;
+  margin: 0 !important;
+  pointer-events: auto;
+}
+.leaflet-bottom.leaflet-left .leaflet-control-scale {
+  order: 1 !important;
+}
+.leaflet-bottom.leaflet-left .leaflet-control-attribution {
+  order: 2 !important;
+}
+
+.leaflet-control-scale-line {
+  border: 1px solid rgb(255 255 255 / 0.25) !important;
+  border-top: none !important;
+  color: var(--color-tinta) !important;
+  background: rgb(17 24 39 / 0.85) !important;
+  backdrop-filter: blur(8px);
+  font-family: var(--font-mono);
+  font-size: 11px !important;
+  font-weight: 500;
+  padding: 2px 6px !important;
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.4);
+}
+.leaflet-control-attribution {
+  font-size: 10px !important;
+  line-height: 1.3 !important;
+  color: var(--color-tinta-tenue) !important;
+  background: rgb(17 24 39 / 0.85) !important;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgb(255 255 255 / 0.15) !important;
+  border-radius: 4px !important;
+  padding: 2px 8px !important;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3) !important;
+  max-width: min(500px, calc(100vw - 200px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leaflet-control-attribution a {
+  color: var(--color-tinta-suave) !important;
+  font-weight: 500;
+}
+
+.leaflet-tooltip.rotulo {
+  font: 600 13px/1.3 var(--font-sans);
+  color: var(--color-tinta);
+  background: rgb(17 24 39 / 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 8px;
+  box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.5);
+  padding: 5px 10px;
+}
+
+/* Plantas armadoras: rombo, para distinguirlas de cualquier otro punto. */
+.marcador-rombo span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: rotate(45deg) scale(0.78);
+  border-style: solid;
+  box-shadow: 0 2px 5px rgb(15 23 42 / 0.32);
+}

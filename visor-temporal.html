@@ -1,0 +1,462 @@
+<!doctype html>
+<!--
+  VISOR TEMPORAL — solo para revisar los datos extraídos del Geovisualizador IIEC.
+  No es el visor definitivo: no hay recorte a BC, ni diseño, ni separación de
+  datos/estilo/UI. Lee los archivos de datos/ tal cual están y los pinta con la
+  simbología del visor original (documentada en INVENTARIO.md).
+  Requiere servidor HTTP (fetch no funciona con file://):
+    python -m http.server 8765   (desde esta carpeta)
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor temporal BC</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --panel:#f6f8fa; --accent:#0969da; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font: 13px/1.4 system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  body { display:flex; }
+  #panel { width:320px; flex:none; overflow-y:auto; border-right:1px solid var(--line); background:var(--panel); padding:12px; }
+  #map { flex:1; }
+  h1 { font-size:15px; margin:0 0 2px; }
+  .aviso { color:var(--muted); font-size:12px; margin:0 0 10px; }
+  .vistas { display:flex; gap:6px; margin-bottom:10px; }
+  .vistas button { flex:1; padding:5px; border:1px solid var(--line); background:var(--bg); border-radius:4px; cursor:pointer; }
+  .vistas button:hover { border-color:var(--accent); }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:14px 0 6px; }
+  .capa { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:7px 8px; margin-bottom:6px; }
+  .capa > label { display:flex; gap:6px; align-items:flex-start; font-weight:600; cursor:pointer; }
+  .capa .fuente { font-weight:400; color:var(--muted); font-size:11px; display:block; }
+  .capa select { width:100%; margin-top:6px; font:inherit; }
+  .controles { display:none; }
+  .capa.activa .controles { display:block; }
+  .leyenda { margin-top:6px; font-size:12px; }
+  .leyenda div { display:flex; align-items:center; gap:6px; }
+  .leyenda i { display:inline-block; width:14px; height:12px; border:1px solid #0003; flex:none; }
+  .leyenda i.punto { border-radius:50%; width:11px; height:11px; }
+  .leyenda i.linea { height:0; border:0; border-top:3px solid; }
+  .leyenda img { max-width:100%; margin-top:6px; border:1px solid var(--line); }
+  .estado { font-size:11px; color:var(--muted); margin-top:4px; }
+  .estado.error { color:#cf222e; }
+  .popup table { border-collapse:collapse; font-size:11px; }
+  .popup td { border-top:1px solid #eee; padding:2px 6px 2px 0; vertical-align:top; }
+  .popup td:first-child { color:var(--muted); white-space:nowrap; }
+  .popup .scroll { max-height:240px; overflow:auto; }
+  @media (max-width: 700px) {
+    body { flex-direction:column; }
+    #panel { width:auto; max-height:45vh; border-right:0; border-bottom:1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<aside id="panel">
+  <h1>Visor temporal — Baja California</h1>
+  <p class="aviso">Revisión de los datos extraídos, sin recortar ni tratar. Clic en un elemento para ver sus atributos.</p>
+  <div class="vistas">
+    <button data-vista="bc">Baja California</button>
+    <button data-vista="tij">Tijuana</button>
+    <button data-vista="mx">Nacional</button>
+  </div>
+  <div id="capas"></div>
+</aside>
+<div id="map"></div>
+
+<script>
+// ---------------------------------------------------------------- utilidades
+const VISTAS = {
+  bc:  [[28.0, -117.2], [32.75, -112.6]],
+  tij: [[32.38, -117.13], [32.56, -116.75]],
+  mx:  [[14.4, -118.5], [32.8, -86.6]],
+};
+
+const cache = {};
+function cargarJSON(ruta) {
+  return cache[ruta] ??= fetch(ruta).then(r => {
+    if (!r.ok) throw new Error(`${ruta}: HTTP ${r.status}`);
+    return r.json();
+  });
+}
+function cargarTexto(ruta) {
+  return cache[ruta] ??= fetch(ruta).then(r => {
+    if (!r.ok) throw new Error(`${ruta}: HTTP ${r.status}`);
+    return r.text();
+  });
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+function popupAtributos(titulo) {
+  return (feature, layer) => {
+    layer.bindPopup(() => {
+      const filas = Object.entries(feature.properties || {})
+        .filter(([, v]) => v !== null && v !== '')
+        .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
+      return `<div class="popup"><b>${esc(titulo)}</b><div class="scroll"><table>${filas}</table></div></div>`;
+    }, { maxWidth: 360 });
+  };
+}
+
+// CSV mínimo con comillas: los IC_*.csv traen "0,71" (coma decimal entrecomillada)
+// en unas columnas y 0.71 en otras, con BOM al inicio.
+function parseCSV(texto) {
+  texto = texto.replace(/^﻿/, '');
+  const filas = [];
+  for (const linea of texto.split(/\r?\n/)) {
+    if (!linea.trim()) continue;
+    const celdas = []; let actual = '', comillas = false;
+    for (const ch of linea) {
+      if (ch === '"') comillas = !comillas;
+      else if (ch === ',' && !comillas) { celdas.push(actual); actual = ''; }
+      else actual += ch;
+    }
+    celdas.push(actual);
+    filas.push(celdas);
+  }
+  return filas;
+}
+const numero = s => { const n = parseFloat(String(s).replace(',', '.')); return Number.isFinite(n) ? n : null; };
+
+// Une por nombre de entidad; la única diferencia entre los CSV y mexicoHigh es
+// "Estado de México" vs "México". Los alias de abajo cubren otras variantes comunes.
+const ALIAS = { 'estado de mexico':'mexico', 'distrito federal':'ciudad de mexico', 'cdmx':'ciudad de mexico',
+  'coahuila de zaragoza':'coahuila', 'michoacan de ocampo':'michoacan', 'veracruz de ignacio de la llave':'veracruz' };
+function normEntidad(s) {
+  const n = String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  return ALIAS[n] || n;
+}
+
+// ---------------------------------------------------------------- mapa
+const map = L.map('map', { preferCanvas: true, zoomControl: true });
+// Teselas Esri sin capa de referencia; su teselado no pasa de z16.
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19, maxNativeZoom: 16, attribution: 'Esri, HERE, Garmin, © OpenStreetMap',
+}).addTo(map);
+// Si la página carga con el mapa oculto (tamaño 0), fitBounds deja zoom 0;
+// por eso el encuadre espera a que el contenedor tenga tamaño. La vista previa
+// hace falta porque Leaflet ignora invalidateSize() mientras el mapa no tiene vista.
+map.setView([30.4, -114.9], 6);
+const encuadre = new ResizeObserver(([e]) => {
+  if (e.contentRect.width === 0) return;
+  map.invalidateSize();
+  map.fitBounds(VISTAS.bc);
+  encuadre.disconnect();
+});
+encuadre.observe(document.getElementById('map'));
+
+// Panes fijos para que el orden de dibujo no dependa del orden en que se encienden las capas.
+[['fondo', 405], ['isocronas', 410], ['lineas', 420], ['puntos', 430]].forEach(([n, z]) => {
+  map.createPane(n).style.zIndex = z;
+});
+
+document.querySelectorAll('[data-vista]').forEach(b =>
+  b.addEventListener('click', () => map.fitBounds(VISTAS[b.dataset.vista])));
+
+// ---------------------------------------------------------------- simbología
+const RAMPA_ROJOS = ['#fee5d9', '#fcae91', '#fb6a4a', '#de2d26', '#a50f15'];
+
+const VULN_COLOR = { 'MUY ALTO':'#a50f15', 'ALTO':'#de2d26', 'MEDIO':'#fb6a4a', 'BAJO':'#fcae91', 'MUY BAJO':'#fee5d9' };
+const VULN_INDICES = {
+  G_INDICE:   { nombre: 'Vulnerabilidad Multicriterio (Índice Global)', img: null },
+  g_espacial: { nombre: 'Vulnerabilidad en Hogar', img: 'assets/leyendas/Vuln_Hogar.png' },
+  g_urbano:   { nombre: 'Deficiencias en Infraestructura', img: 'assets/leyendas/Vuln_Urbana.png' },
+  g_socioeco: { nombre: 'Sin Oportunidades', img: 'assets/leyendas/Vuln_oportunidades.png' },
+};
+function colorVuln(v) {
+  if (!v) return '#333333';
+  return VULN_COLOR[String(v).trim().toUpperCase()] || '#444444'; // incluye "Sin dato"
+}
+
+const ISO = { 15: ['#00ff00', 0.8], 30: ['#ffff00', 0.4], 60: ['#ff4500', 0.25] };
+
+function colorIndustria(c) {
+  c = String(c || '');
+  if (c.includes('Automo')) return '#ff3333';
+  if (c.includes('Electrónica')) return '#2196f3';
+  if (c.includes('Eléctrica')) return '#ffc107';
+  if (c.includes('SEIT') || c.includes('Servicios')) return '#9c27b0';
+  return '#bbbbbb';
+}
+function radioEstrato(e) {
+  e = String(e || '');
+  if (e.includes('Grande')) return 8;
+  if (e.includes('Mediana')) return 6;
+  if (e.includes('Pequeña')) return 4.5;
+  return 3;
+}
+
+const SITUACION = {
+  'Riesgo geológico y falta de servicios': '#e53935',
+  'Asentamiento irregular y falta de servicios': '#8e24aa',
+  'Inseguridad': '#1e88e5',
+  'Inseguridad y falta de servicios': '#3949ab',
+  'Sin transporte': '#fdd835',
+};
+
+const COLOR_ENLACE = { 'T1-T0':'#ff6d00', 'T2-T1':'#ffd600', 'T3-T2':'#90a4ae' };
+const ESCALA_TIPO = { 'T1-T0':1.0, 'T2-T1':0.55, 'T3-T2':0.55 };
+const COLOR_TIER = { '0':'#00e5ff', '1':'#ff6d00', '2':'#ffd600', '3':'#90a4ae' };
+const OPAC_CONF = { alta:0.9, media:0.6, baja:0.3 };
+
+const leyendaFilas = pares => pares.map(([color, texto, clase = '']) =>
+  `<div><i class="${clase}" style="${clase === 'linea' ? 'border-color' : 'background'}:${color}"></i>${esc(texto)}</div>`).join('');
+
+// ---------------------------------------------------------------- capas
+// Cada capa: construir(ctrl) → Promise<{ layer, leyenda }>. ctrl son los valores de sus selects.
+const CAPAS = [
+  { grupo: 'Nacional', id: 'ic', nombre: 'Índice de crecimiento compuesto',
+    fuente: 'datos/nacional/IC_*.csv + contexto/mexicoHigh.json',
+    controles: [
+      { id: 'industria', opciones: [['IC_AUTOMOTRIZ','Automotriz'], ['IC_ELECTRICA','Eléctrica'], ['IC_ELECTRONICA','Electrónica'], ['IC_SEIT','SEIT']] },
+      { id: 'anio', opciones: [['2023','2023'], ['2018','2018'], ['2013','2013'], ['2008','2008'], ['2003','2003']] },
+    ],
+    async construir({ industria, anio }) {
+      const [csv, estados] = await Promise.all([
+        cargarTexto(`datos/nacional/${industria}.csv`), cargarJSON('datos/contexto/mexicoHigh.json')]);
+      const [enc, ...filas] = parseCSV(csv);
+      const col = enc.indexOf(anio); // por nombre: IC_ELECTRONICA trae los años invertidos
+      const valores = new Map(filas.map(f => [normEntidad(f[0]), numero(f[col])]));
+      const orden = [...valores.values()].filter(v => v !== null).sort((a, b) => a - b);
+      const paso = Math.floor(orden.length / 5);
+      const cortes = [1, 2, 3, 4].map(i => orden[paso * i]);
+      const clase = v => { const i = cortes.findIndex(c => v <= c); return i === -1 ? 4 : i; };
+      let unidos = 0;
+      const layer = L.geoJSON(estados, {
+        pane: 'fondo',
+        style: f => {
+          const v = valores.get(normEntidad(f.properties.name));
+          if (v !== undefined && v !== null) unidos++;
+          return { color: '#fff', weight: 1, fillOpacity: 0.85, fillColor: v == null ? '#cccccc' : RAMPA_ROJOS[clase(v)] };
+        },
+        onEachFeature: (f, l) => {
+          const v = valores.get(normEntidad(f.properties.name));
+          l.bindPopup(`<b>${esc(f.properties.name)}</b><br>${esc(industria)} ${anio}: ${v == null ? 'sin valor' : v.toFixed(4)}`);
+        },
+      });
+      const lim = [orden[0], ...cortes, orden[orden.length - 1]];
+      const leyenda = leyendaFilas(RAMPA_ROJOS.map((c, i) => [c, `${lim[i].toFixed(3)} – ${lim[i + 1].toFixed(3)}`]))
+        + leyendaFilas([['#cccccc', 'Sin valor']])
+        + `<div class="estado">${unidos} de ${estados.features.length} estados unidos con la tabla · quintiles por rango</div>`;
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Nacional', id: 'red_enlaces', nombre: 'Red de Proveeduría — enlaces',
+    fuente: 'datos/nacional/red_proveeduria_enlaces_top5.geojson',
+    async construir() {
+      const data = await cargarJSON('datos/nacional/red_proveeduria_enlaces_top5.geojson');
+      const maxLog = Math.log1p(Math.max(...data.features.map(f => f.properties.flujo_estimado || 0))) || 1;
+      // Los T1-T0 al final para que queden encima de los T2-T1, que son la mayoría.
+      const orden = { 'T3-T2': 0, 'T2-T1': 1, 'T1-T0': 2 };
+      const ordenado = { ...data, features: [...data.features].sort((a, b) => orden[a.properties.enlace] - orden[b.properties.enlace]) };
+      const layer = L.geoJSON(ordenado, {
+        pane: 'lineas',
+        style: ({ properties: p }) => ({
+          color: COLOR_ENLACE[p.enlace] || '#999',
+          weight: (0.6 + 4.4 * Math.log1p(p.flujo_estimado || 0) / maxLog) * (ESCALA_TIPO[p.enlace] || 1),
+          opacity: OPAC_CONF[p.confiabilidad] ?? 0.5,
+          dashArray: p.enlace === 'T3-T2' ? '4 4' : null,
+        }),
+        onEachFeature: popupAtributos('Enlace de proveeduría'),
+      });
+      const leyenda = leyendaFilas(Object.entries(COLOR_ENLACE).map(([k, c]) => [c, k, 'linea']))
+        + `<div class="estado">${data.features.length} enlaces · grosor = flujo, opacidad = confiabilidad</div>`;
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Nacional', id: 'red_nodos', nombre: 'Red de Proveeduría — nodos',
+    fuente: 'datos/nacional/red_proveeduria_nodos.geojson',
+    async construir() {
+      const data = await cargarJSON('datos/nacional/red_proveeduria_nodos.geojson');
+      const tier = p => String(p.tier_red).split('/')[0];
+      const maxPR = Math.max(...data.features.filter(f => tier(f.properties) !== '0')
+        .map(f => f.properties.pagerank_proveeduria || 0)) || 1;
+      const layer = L.geoJSON(data, {
+        pane: 'puntos',
+        pointToLayer: (f, ll) => {
+          const p = f.properties, t = tier(p);
+          return L.circleMarker(ll, {
+            pane: 'puntos', radius: t === '0' ? 7 : 2.5 + 6 * Math.sqrt((p.pagerank_proveeduria || 0) / maxPR),
+            color: '#111', weight: t === '0' ? 1.5 : 0.5, fillColor: COLOR_TIER[t] || '#999', fillOpacity: 0.9,
+          });
+        },
+        onEachFeature: popupAtributos('Nodo de proveeduría'),
+      });
+      const leyenda = leyendaFilas(Object.entries(COLOR_TIER).map(([k, c]) => [c, k === '0' ? 'Tier 0 (planta)' : `Tier ${k}`, 'punto']))
+        + `<div class="estado">${data.features.length} nodos · tamaño = PageRank</div>`;
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Estatal', id: 'isocronas', nombre: 'Accesibilidad a la Armadora — isócronas',
+    fuente: 'datos/estatal/isocronas.geojson', activa: true,
+    async construir() {
+      const data = await cargarJSON('datos/estatal/isocronas.geojson');
+      // 60 abajo, 15 arriba: si no, la de 60 min tapa a las menores.
+      const ordenado = { ...data, features: [...data.features].sort((a, b) => b.properties.AA_MINS - a.properties.AA_MINS) };
+      const layer = L.geoJSON(ordenado, {
+        pane: 'isocronas',
+        style: ({ properties: p }) => {
+          const [c, o] = ISO[p.AA_MINS] || ['#808080', 0.3];
+          return { color: c, weight: 1, fillColor: c, fillOpacity: o };
+        },
+        onEachFeature: popupAtributos('Isócrona'),
+      });
+      return { layer, leyenda: leyendaFilas(Object.entries(ISO).map(([m, [c]]) => [c, `${m} min (en auto)`])) };
+    } },
+
+  { grupo: 'Estatal', id: 'denue', nombre: 'Accesibilidad a la Armadora — empresas DENUE',
+    fuente: 'datos/estatal/denue.geojson',
+    async construir() {
+      const data = await cargarJSON('datos/estatal/denue.geojson');
+      const sinGeom = data.features.filter(f => !f.geometry).length;
+      const layer = L.geoJSON(data, {
+        pane: 'puntos',
+        pointToLayer: (f, ll) => L.circleMarker(ll, {
+          pane: 'puntos', radius: radioEstrato(f.properties.Estrato), color: '#000', weight: 0.5,
+          fillColor: colorIndustria(f.properties['Industrias agrupadas']), fillOpacity: 0.85,
+        }),
+        onEachFeature: popupAtributos('Empresa DENUE'),
+      });
+      const leyenda = leyendaFilas([['#ff3333','Automotriz','punto'], ['#2196f3','Electrónica','punto'],
+        ['#ffc107','Eléctrica','punto'], ['#9c27b0','SEIT','punto'], ['#bbbbbb','Otra','punto']])
+        + `<div class="estado">${data.features.length - sinGeom} con ubicación · ${sinGeom} sin geometría (omitidas) · tamaño = estrato</div>`;
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Estatal', id: 'vuln', nombre: 'Vulnerabilidad por AGEB',
+    fuente: 'datos/estatal/region_Norte.geojson (32 MB)',
+    controles: [{ id: 'indice', opciones: Object.entries(VULN_INDICES).map(([k, v]) => [k, v.nombre]) }],
+    async construir({ indice }) {
+      const data = await cargarJSON('datos/estatal/region_Norte.geojson');
+      const conteo = {};
+      const layer = L.geoJSON(data, {
+        pane: 'fondo',
+        style: ({ properties: p }) => {
+          const v = p[indice] ?? '(vacío)';
+          conteo[v] = (conteo[v] || 0) + 1;
+          return { color: '#00000033', weight: 0.3, fillColor: colorVuln(p[indice]), fillOpacity: 0.85 };
+        },
+        onEachFeature: popupAtributos('AGEB'),
+      });
+      const cats = ['Muy alto', 'Alto', 'Medio', 'Bajo', 'Muy bajo', 'Sin dato'];
+      const { img } = VULN_INDICES[indice];
+      const leyenda = leyendaFilas(cats.map(c => [colorVuln(c), `${c} (${conteo[c] || 0})`]))
+        + `<div class="estado">${data.features.length} AGEB de 5 estados, sin recortar · campo <code>${indice}</code></div>`
+        + (img ? `<img src="${img}" alt="Explicación del índice">` : '');
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Estatal', id: 'levantamiento', nombre: 'Cartografía participativa — levantamiento',
+    fuente: 'datos/estatal/levantamiento.geojson',
+    async construir() {
+      const data = await cargarJSON('datos/estatal/levantamiento.geojson');
+      const layer = L.geoJSON(data, {
+        pane: 'puntos',
+        pointToLayer: (f, ll) => L.circleMarker(ll, {
+          pane: 'puntos', radius: 6, color: '#fff', weight: 1.5,
+          fillColor: SITUACION[f.properties['Situación']] || '#ff9800', fillOpacity: 1,
+        }),
+        onEachFeature: popupAtributos('Levantamiento participativo'),
+      });
+      const leyenda = leyendaFilas([...Object.entries(SITUACION), ['Otra', '#ff9800']].map(([t, c]) => [c, t, 'punto']))
+        + `<div class="estado">${data.features.length} puntos</div>`;
+      return { layer, leyenda };
+    } },
+
+  { grupo: 'Contexto', id: 'armadoras', nombre: 'Plantas armadoras',
+    fuente: 'datos/contexto/armadoras.geojson', activa: true,
+    async construir() {
+      const data = await cargarJSON('datos/contexto/armadoras.geojson');
+      const layer = L.geoJSON(data, {
+        pane: 'puntos',
+        pointToLayer: (f, ll) => L.circleMarker(ll, { pane: 'puntos', radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 })
+          .bindTooltip(String(f.properties.NOMBRE), { direction: 'top' }),
+        onEachFeature: popupAtributos('Planta armadora'),
+      });
+      return { layer, leyenda: leyendaFilas([['#111', `Armadora (${data.features.length})`, 'punto']]) };
+    } },
+
+  { grupo: 'Contexto', id: 'delegaciones', nombre: 'Delegaciones de Tijuana',
+    fuente: 'datos/contexto/limite_delegacional_Tijuana.geojson', activa: true,
+    async construir() {
+      const data = await cargarJSON('datos/contexto/limite_delegacional_Tijuana.geojson');
+      const layer = L.geoJSON(data, {
+        pane: 'lineas', style: { color: '#24292f', weight: 1.5, fill: false },
+        onEachFeature: (f, l) => l.bindTooltip(String(f.properties.Nombre), { sticky: true }),
+      });
+      return { layer, leyenda: leyendaFilas([['#24292f', `Delegación (${data.features.length})`, 'linea']]) };
+    } },
+
+  { grupo: 'Contexto', id: 'equipamiento', nombre: 'Equipamiento de Tijuana',
+    fuente: 'datos/contexto/Equipamiento_Tijuana.geojson',
+    async construir() {
+      const data = await cargarJSON('datos/contexto/Equipamiento_Tijuana.geojson');
+      const layer = L.geoJSON(data, {
+        pane: 'puntos',
+        pointToLayer: (f, ll) => L.circleMarker(ll, { pane: 'puntos', radius: 3.5, color: '#fff', weight: 1, fillColor: '#0969da', fillOpacity: 1 }),
+        onEachFeature: popupAtributos('Equipamiento'),
+      });
+      return { layer, leyenda: leyendaFilas([['#0969da', `Equipamiento (${data.features.length})`, 'punto']]) };
+    } },
+
+  { grupo: 'Contexto', id: 'municipios', nombre: 'Límites municipales (marco anterior a 2020)',
+    fuente: 'datos/contexto/Limite_municipal_opt.geojson (17 MB)',
+    async construir() {
+      const data = await cargarJSON('datos/contexto/Limite_municipal_opt.geojson');
+      const layer = L.geoJSON(data, {
+        pane: 'lineas', style: { color: '#57606a', weight: 0.8, fill: false },
+        onEachFeature: (f, l) => l.bindTooltip(String(f.properties.nom_mun), { sticky: true }),
+      });
+      return { layer, leyenda: leyendaFilas([['#57606a', `Municipio (${data.features.length} polígonos)`, 'linea']]) };
+    } },
+];
+
+// ---------------------------------------------------------------- panel
+const contenedor = document.getElementById('capas');
+let grupoActual = null;
+
+for (const capa of CAPAS) {
+  if (capa.grupo !== grupoActual) {
+    grupoActual = capa.grupo;
+    contenedor.insertAdjacentHTML('beforeend', `<h2>${esc(capa.grupo)}</h2>`);
+  }
+  const caja = document.createElement('div');
+  caja.className = 'capa';
+  caja.innerHTML = `
+    <label><input type="checkbox"><span>${esc(capa.nombre)}<span class="fuente">${esc(capa.fuente)}</span></span></label>
+    <div class="controles">
+      ${(capa.controles || []).map(c => `<select data-ctrl="${c.id}">${c.opciones.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select>`).join('')}
+      <div class="leyenda"></div>
+    </div>`;
+  contenedor.appendChild(caja);
+
+  const chk = caja.querySelector('input');
+  const leyenda = caja.querySelector('.leyenda');
+  let actual = null, peticion = 0;
+
+  async function pintar() {
+    const mia = ++peticion;
+    if (actual) { map.removeLayer(actual); actual = null; }
+    if (!chk.checked) { caja.classList.remove('activa'); return; }
+    caja.classList.add('activa');
+    const ctrl = Object.fromEntries([...caja.querySelectorAll('select')].map(s => [s.dataset.ctrl, s.value]));
+    leyenda.innerHTML = '<div class="estado">Cargando…</div>';
+    try {
+      const { layer, leyenda: html } = await capa.construir(ctrl);
+      if (mia !== peticion || !chk.checked) return; // otra petición o se apagó mientras cargaba
+      actual = layer.addTo(map);
+      leyenda.innerHTML = html;
+    } catch (e) {
+      if (mia !== peticion) return;
+      leyenda.innerHTML = `<div class="estado error">Error: ${esc(e.message)}</div>`;
+      console.error(e);
+    }
+  }
+  chk.addEventListener('change', pintar);
+  caja.querySelectorAll('select').forEach(s => s.addEventListener('change', pintar));
+  if (capa.activa) { chk.checked = true; pintar(); }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.claude/
+.DS_Store
+
+# Generados por scripts/preparar-capas.mjs a partir de datos/
+public/capas/
+public/metodologia/
+src/data/siluetas.json
