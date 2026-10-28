@@ -39,9 +39,9 @@ export default function Preportada({ abierta, alCerrar }: Props) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="preportada-titulo"
-      className="fixed inset-0 z-[2000] flex items-center justify-center bg-fondo/85 p-3.5 backdrop-blur-md sm:p-5"
+      className="fixed inset-0 z-[2000] flex items-center justify-center overflow-y-auto bg-fondo/85 p-3.5 backdrop-blur-md sm:p-5"
     >
-      <div className="relative my-auto flex w-full max-w-2xl flex-col rounded-2xl border border-linea bg-superficie p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.8)] sm:p-6">
+      <div className="scroll-fino relative my-auto flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-y-auto rounded-2xl border border-linea bg-superficie p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.8)] sm:p-6">
         {/* Botón discreto de cerrar en esquina superior */}
         <button
           type="button"
@@ -148,11 +148,11 @@ export default function Preportada({ abierta, alCerrar }: Props) {
         </div>
 
         {/* Botón centrado Entrar al Geovisor sin flecha */}
-        <div className="mt-5 flex justify-center">
+        <div className="mt-5 flex shrink-0 justify-center pb-1">
           <button
             type="button"
             onClick={alCerrar}
-            className="inline-flex min-h-[40px] cursor-pointer items-center justify-center rounded-xl border border-acento bg-acento px-8 py-2 font-display text-[14px] font-bold text-white shadow-md transition-all hover:bg-acento-vivo hover:shadow-lg active:scale-98"
+            className="inline-flex min-h-[42px] cursor-pointer items-center justify-center rounded-xl border border-acento bg-acento px-8 py-2 font-display text-[14px] font-bold text-white shadow-md transition-all hover:bg-acento-vivo hover:shadow-lg active:scale-98"
           >
             Entrar al Geovisor
           </button>
